@@ -1,0 +1,41 @@
+{
+  "name": "psd2ai",
+  "version": "1.0.0",
+  "description": "Convert PSD files to AI-readable structured data with precise layout information and optimized thumbnails",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "psd2ai": "./cli.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "psd",
+    "ai",
+    "layout",
+    "design",
+    "converter",
+    "photoshop",
+    "claude",
+    "gpt",
+    "llm"
+  ],
+  "author": "citizenl <hi@citizenl.me>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/citizenll/psd2ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/citizenll/psd2ai/issues"
+  },
+  "homepage": "https://github.com/citizenll/psd2ai#readme",
+  "dependencies": {
+    "psd": "^3.3.0",
+    "sharp": "^0.33.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
