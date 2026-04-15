@@ -71,7 +71,7 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
   const height = layer.height;
 
   const layerData = {
-    name: layer.name || 'Layer',
+    name: extractLayerName(layer.name),
     type: node.isGroup() ? 'group' : 'layer',
     visible: layer.visible,
     opacity: layer.opacity / 255,
