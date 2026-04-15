@@ -1,7 +1,13 @@
 node_modules/
 output/
-test-output.html
+test-*/
+debug.js
 *.psd
 *.log
+*.html
 .DS_Store
 .env
+Thumbs.db
+侧栏icon/
+侧边栏弹窗效果图.png
+炼妖炉/

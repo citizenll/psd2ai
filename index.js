@@ -37,17 +37,10 @@ async function layerToJSON(node, outputDir, index) {
   if (!node || !node.layer) return null;
 
   const layer = node.layer;
-
-  // 跳过不可见图层
-  if (!layer.visible) return null;
-
   const left = layer.left;
   const top = layer.top;
   const width = layer.width;
   const height = layer.height;
-
-  // 跳过无效尺寸
-  if (width <= 0 || height <= 0) return null;
 
   const layerData = {
     name: layer.name || 'Layer',
@@ -76,8 +69,8 @@ async function layerToJSON(node, outputDir, index) {
     }
   }
 
-  // 导出图层图片
-  if (!node.isGroup() && layerData.type !== 'text') {
+  // 导出图层图片（只导出可见的非文本图层）
+  if (!node.isGroup() && layerData.type !== 'text' && layer.visible && width > 0 && height > 0) {
     try {
       const imageName = `layer_${index}_${layer.name.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
       const imagePath = join(outputDir, imageName);
@@ -91,12 +84,23 @@ async function layerToJSON(node, outputDir, index) {
     }
   }
 
-  // 处理子图层（组）
+  // 处理子图层（组）- 即使父图层不可见，也要检查子图层
   if (node.children && node.children().length > 0) {
     const childrenPromises = node.children()
       .map((child, i) => layerToJSON(child, outputDir, `${index}_${i}`));
     const childrenResults = await Promise.all(childrenPromises);
     layerData.children = childrenResults.filter(data => data !== null);
+  }
+
+  // 如果是不可见的组，但有可见的子图层，返回子图层
+  if (!layer.visible && node.isGroup() && layerData.children && layerData.children.length > 0) {
+    // 返回子图层数组而不是组本身
+    return layerData.children;
+  }
+
+  // 跳过不可见且无有效尺寸的图层（但不是组）
+  if (!layer.visible && !node.isGroup() && (width <= 0 || height <= 0)) {
+    return null;
   }
 
   return layerData;
@@ -240,7 +244,15 @@ async function psdToJSON(psdPath, outputDir) {
   const layerPromises = tree.children()
     .map((node, i) => layerToJSON(node, outputDir, i));
   const layerResults = await Promise.all(layerPromises);
-  const layers = layerResults.filter(data => data !== null);
+
+  // 扁平化结果（处理隐藏组返回的子图层数组）
+  const layers = layerResults.reduce((acc, result) => {
+    if (result === null) return acc;
+    if (Array.isArray(result)) {
+      return acc.concat(result);
+    }
+    return acc.concat([result]);
+  }, []);
 
   // 生成 JSON 数据
   const jsonData = {
