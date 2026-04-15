@@ -31,9 +31,33 @@ async function createThumbnail(imagePath, thumbPath, maxWidth = 400) {
 }
 
 /**
+ * 提取图层真实名称（去除修饰符）
+ */
+function extractLayerName(name) {
+  // 如果以 $ 开头，提取到空格或分号之前的部分
+  if (name.startsWith('$')) {
+    const match = name.match(/^\$([^\s;]+)/);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  // 如果以 & 开头（effect 等），提取到空格或分号之前的部分
+  if (name.startsWith('&')) {
+    const match = name.match(/^&([^\s;]+)/);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  // 其他情况，去除特殊字符
+  return name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_');
+}
+
+/**
  * 提取图层信息为 JSON 对象
  */
-async function layerToJSON(node, outputDir, index) {
+async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
   if (!node || !node.layer) return null;
 
   const layer = node.layer;
@@ -76,7 +100,18 @@ async function layerToJSON(node, outputDir, index) {
   // 导出图层图片（只导出可见的非文本图层）
   if (!node.isGroup() && layerData.type !== 'text' && width > 0 && height > 0) {
     try {
-      const imageName = `layer_${index}_${layer.name.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
+      const cleanName = extractLayerName(layer.name);
+
+      // 处理重名：如果名称已存在，添加序号
+      let imageName = `${cleanName}.png`;
+      if (usedNames.has(cleanName)) {
+        const count = usedNames.get(cleanName) + 1;
+        usedNames.set(cleanName, count);
+        imageName = `${cleanName}_${count}.png`;
+      } else {
+        usedNames.set(cleanName, 0);
+      }
+
       const imagePath = join(outputDir, imageName);
       node.layer.image.saveAsPng(imagePath);
       layerData.image = imageName;
@@ -91,7 +126,7 @@ async function layerToJSON(node, outputDir, index) {
   // 处理子图层（组）
   if (node.children && node.children().length > 0) {
     const childrenPromises = node.children()
-      .map((child, i) => layerToJSON(child, outputDir, `${index}_${i}`));
+      .map((child, i) => layerToJSON(child, outputDir, `${index}_${i}`, usedNames));
     const childrenResults = await Promise.all(childrenPromises);
     layerData.children = childrenResults.filter(data => data !== null);
   }
@@ -233,9 +268,12 @@ async function psdToJSON(psdPath, outputDir) {
   console.log(`图层数量: ${tree.children().length}`);
   console.log(`\n开始导出图层...`);
 
+  // 用于跟踪已使用的文件名
+  const usedNames = new Map();
+
   // 提取图层信息
   const layerPromises = tree.children()
-    .map((node, i) => layerToJSON(node, outputDir, i));
+    .map((node, i) => layerToJSON(node, outputDir, i, usedNames));
   const layerResults = await Promise.all(layerPromises);
   const layers = layerResults.filter(data => data !== null);
 
