@@ -1,6 +1,6 @@
 {
   "name": "psd2ai",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Convert PSD files to AI-readable structured data with precise layout information and optimized thumbnails",
   "main": "index.js",
   "type": "module",
