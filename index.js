@@ -31,6 +31,112 @@ async function createThumbnail(imagePath, thumbPath, maxWidth = 400) {
 }
 
 /**
+ * 分析子元素的布局模式
+ */
+function analyzeLayout(children) {
+  if (!children || children.length === 0) return null;
+
+  // 过滤掉无效尺寸的元素
+  const validChildren = children.filter(c =>
+    c.size && c.size.width > 0 && c.size.height > 0 && c.position
+  );
+
+  if (validChildren.length < 2) return null;
+
+  // 计算元素的中心点
+  const withCenters = validChildren.map(c => ({
+    ...c,
+    centerX: c.position.left + c.size.width / 2,
+    centerY: c.position.top + c.size.height / 2
+  }));
+
+  // 按位置排序
+  const sortedByX = [...withCenters].sort((a, b) => a.centerX - b.centerX);
+  const sortedByY = [...withCenters].sort((a, b) => a.centerY - b.centerY);
+
+  // 计算中心点之间的距离
+  let totalHorizontalDistance = 0;
+  let totalVerticalDistance = 0;
+
+  for (let i = 1; i < sortedByX.length; i++) {
+    totalHorizontalDistance += Math.abs(sortedByX[i].centerX - sortedByX[i - 1].centerX);
+  }
+
+  for (let i = 1; i < sortedByY.length; i++) {
+    totalVerticalDistance += Math.abs(sortedByY[i].centerY - sortedByY[i - 1].centerY);
+  }
+
+  // 判断主要方向：哪个方向的距离更大
+  const isVertical = totalVerticalDistance > totalHorizontalDistance;
+  const direction = isVertical ? 'column' : 'row';
+
+  // 计算实际间距
+  let gaps = [];
+  if (isVertical) {
+    for (let i = 1; i < sortedByY.length; i++) {
+      const prev = sortedByY[i - 1];
+      const curr = sortedByY[i];
+      const gap = curr.position.top - (prev.position.top + prev.size.height);
+      gaps.push(gap);
+    }
+  } else {
+    for (let i = 1; i < sortedByX.length; i++) {
+      const prev = sortedByX[i - 1];
+      const curr = sortedByX[i];
+      const gap = curr.position.left - (prev.position.left + prev.size.width);
+      gaps.push(gap);
+    }
+  }
+
+  const avgGap = gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+
+  // 分析对齐方式
+  const alignment = analyzeAlignment(validChildren, direction);
+
+  return {
+    display: 'flex',
+    flexDirection: direction,
+    gap: Math.max(0, Math.round(avgGap)),
+    ...alignment
+  };
+}
+
+/**
+ * 分析对齐方式
+ */
+function analyzeAlignment(children, direction) {
+  if (direction === 'row') {
+    // 水平布局，检查垂直对齐
+    const tops = children.map(c => c.position.top);
+    const bottoms = children.map(c => c.position.top + c.size.height);
+    const centers = children.map(c => c.position.top + c.size.height / 2);
+
+    const topVariance = Math.max(...tops) - Math.min(...tops);
+    const bottomVariance = Math.max(...bottoms) - Math.min(...bottoms);
+    const centerVariance = Math.max(...centers) - Math.min(...centers);
+
+    if (topVariance < 5) return { alignItems: 'flex-start' };
+    if (bottomVariance < 5) return { alignItems: 'flex-end' };
+    if (centerVariance < 5) return { alignItems: 'center' };
+  } else {
+    // 垂直布局，检查水平对齐
+    const lefts = children.map(c => c.position.left);
+    const rights = children.map(c => c.position.left + c.size.width);
+    const centers = children.map(c => c.position.left + c.size.width / 2);
+
+    const leftVariance = Math.max(...lefts) - Math.min(...lefts);
+    const rightVariance = Math.max(...rights) - Math.min(...rights);
+    const centerVariance = Math.max(...centers) - Math.min(...centers);
+
+    if (leftVariance < 5) return { alignItems: 'flex-start' };
+    if (rightVariance < 5) return { alignItems: 'flex-end' };
+    if (centerVariance < 5) return { alignItems: 'center' };
+  }
+
+  return {};
+}
+
+/**
  * 提取图层真实名称（去除修饰符）
  */
 function extractLayerName(name) {
@@ -129,6 +235,14 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
       .map((child, i) => layerToJSON(child, outputDir, `${index}_${i}`, usedNames));
     const childrenResults = await Promise.all(childrenPromises);
     layerData.children = childrenResults.filter(data => data !== null);
+
+    // 分析布局模式
+    if (layerData.children.length > 0) {
+      const layout = analyzeLayout(layerData.children);
+      if (layout) {
+        layerData.layout = layout;
+      }
+    }
   }
 
   return layerData;
