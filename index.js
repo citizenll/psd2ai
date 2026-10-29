@@ -219,7 +219,8 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
       }
 
       const imagePath = join(outputDir, imageName);
-      node.layer.image.saveAsPng(imagePath);
+      // saveAsPng 是异步写入，必须 await，否则后续读取会拿到不完整的空文件
+      await node.layer.image.saveAsPng(imagePath);
       layerData.image = imageName;
       layerData.thumbnail = `thumb/${imageName}`;
 
@@ -242,6 +243,22 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
       if (layout) {
         layerData.layout = layout;
       }
+
+      // 组图层没有自身像素，用全部子图层包围盒的并集作为组边界
+      const boxes = layerData.children
+        .map(child => child.bounds)
+        .filter(b => b && (b.right - b.left) > 0 && (b.bottom - b.top) > 0);
+      if (boxes.length > 0) {
+        const union = boxes.reduce((acc, b) => ({
+          left: Math.min(acc.left, b.left),
+          top: Math.min(acc.top, b.top),
+          right: Math.max(acc.right, b.right),
+          bottom: Math.max(acc.bottom, b.bottom)
+        }));
+        layerData.position = { left: union.left, top: union.top };
+        layerData.size = { width: union.right - union.left, height: union.bottom - union.top };
+        layerData.bounds = union;
+      }
     }
   }
 
@@ -249,10 +266,23 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
 }
 
 /**
+ * 递归统计叶子图层数量（不含组）
+ */
+function countLayers(layers) {
+  return layers.reduce((count, layer) => {
+    if (layer.children && layer.children.length > 0) {
+      return count + countLayers(layer.children);
+    }
+    return count + 1;
+  }, 0);
+}
+
+/**
  * 生成 README 文档
  */
 function generateReadme(jsonData) {
   const { name, size, layers } = jsonData;
+  const totalLayers = countLayers(layers);
 
   let readme = `# ${name} - PSD 布局导出
 
@@ -264,7 +294,7 @@ function generateReadme(jsonData) {
 我有一个设计稿的布局数据，请阅读 layout.json 文件了解所有图层的位置和尺寸信息。
 
 设计稿尺寸：${size.width}x${size.height}px
-图层数量：${layers.length}
+图层数量：${totalLayers}
 
 请查看 thumb/ 目录下的缩略图来理解每个图层的视觉内容（缩略图是压缩版本，适合 AI 快速读取）。
 完整的预览图在 preview.png，可以查看整体效果。
@@ -289,7 +319,7 @@ ${name}/
 
 - **名称**: ${name}
 - **尺寸**: ${size.width} x ${size.height} px
-- **图层数量**: ${layers.length}
+- **图层数量**: ${totalLayers}
 
 ## 图层列表
 
@@ -404,11 +434,8 @@ async function psdToJSON(psdPath, outputDir) {
   // 导出整体预览图
   console.log(`\n导出整体预览...`);
   const previewPath = join(outputDir, 'preview.png');
-  psd.image.saveAsPng(previewPath);
+  await psd.image.saveAsPng(previewPath);
   console.log(`预览图已生成: ${previewPath}`);
-
-  // 等待文件系统写入完成（psd 库的 saveAsPng 可能有异步操作）
-  await new Promise(resolve => setTimeout(resolve, 500));
 
   // 批量生成缩略图
   console.log(`\n生成缩略图...`);
@@ -420,14 +447,21 @@ async function psdToJSON(psdPath, outputDir) {
     thumbTasks.push(createThumbnail(previewPath, previewThumbPath, 800));
   }
 
-  // 图层缩略图
-  for (const layer of layers) {
-    if (layer.image) {
-      const imagePath = join(outputDir, layer.image);
-      const thumbPath = join(thumbDir, layer.image);
-      if (existsSync(imagePath)) {
-        thumbTasks.push(createThumbnail(imagePath, thumbPath));
-      }
+  // 图层缩略图（递归收集嵌套组内的所有图层）
+  const imageLayers = [];
+  const collectImageLayers = (nodes) => {
+    for (const node of nodes) {
+      if (node.image) imageLayers.push(node);
+      if (node.children && node.children.length > 0) collectImageLayers(node.children);
+    }
+  };
+  collectImageLayers(layers);
+
+  for (const layer of imageLayers) {
+    const imagePath = join(outputDir, layer.image);
+    const thumbPath = join(thumbDir, layer.image);
+    if (existsSync(imagePath)) {
+      thumbTasks.push(createThumbnail(imagePath, thumbPath));
     }
   }
 
