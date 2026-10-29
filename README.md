@@ -44,7 +44,16 @@ psd2ai design.psd my-output
 
 # 使用 npx
 npx psd2ai design.psd
+
+# 同时导出隐藏图层（表情、替换件、特效等部件）
+psd2ai design.psd my-output --include-hidden
 ```
+
+### 导出隐藏图层
+
+PSD 中的隐藏图层常包含表情、替换件、特效等部件（如 Live2D 立绘的替换件、
+闭眼/口型等表情贴图）。默认跳过隐藏图层；加 `--include-hidden` 后一并导出到
+`hidden/` 目录，layout.json 里以 `visible: false` 标记，方便二次创作。
 
 ### 输出结构
 
@@ -52,8 +61,11 @@ npx psd2ai design.psd
 output/
 ├── README.md              # AI 使用说明和图层详情
 ├── layout.json            # 结构化布局数据
+├── parts.json             # 扁平部件清单（每个叶子图层一条记录，带组路径）
 ├── preview.png            # 完整预览图
 ├── layer_*.png            # 原始图层图片
+├── hidden/                # 隐藏图层图片（--include-hidden 时）
+│   └── thumb/             # 隐藏图层缩略图
 └── thumb/                 # 缩略图目录（适合 AI 读取）
     ├── preview.png
     └── layer_*.png

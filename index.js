@@ -163,13 +163,16 @@ function extractLayerName(name) {
 /**
  * 提取图层信息为 JSON 对象
  */
-async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
+async function layerToJSON(node, outputDir, index, usedNames = new Map(), options = {}, inheritedVisible = true) {
   if (!node || !node.layer) return null;
 
   const layer = node.layer;
 
-  // 如果图层不可见，直接跳过（包括其子图层）
-  if (!layer.visible) return null;
+  // 实际可见性 = 自身可见 && 全部祖先可见
+  const effectiveVisible = inheritedVisible && layer.visible;
+
+  // 默认跳过不可见图层（包括其子图层）；--include-hidden 时也导出，图片放 hidden/ 目录
+  if (!effectiveVisible && !options.includeHidden) return null;
 
   const left = layer.left;
   const top = layer.top;
@@ -179,7 +182,7 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
   const layerData = {
     name: extractLayerName(layer.name),
     type: node.isGroup() ? 'group' : 'layer',
-    visible: layer.visible,
+    visible: effectiveVisible,
     opacity: layer.opacity / 255,
     position: { left, top },
     size: { width, height },
@@ -218,10 +221,16 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
         usedNames.set(cleanName, 0);
       }
 
-      const imagePath = join(outputDir, imageName);
-      node.layer.image.saveAsPng(imagePath);
-      layerData.image = imageName;
-      layerData.thumbnail = `thumb/${imageName}`;
+      // 隐藏图层（含隐藏组内的）图片放 hidden/ 目录，缩略图放 hidden/thumb/
+      const hiddenDir = effectiveVisible ? '' : 'hidden';
+      const imagePath = join(outputDir, hiddenDir, imageName);
+      if (hiddenDir) {
+        mkdirSync(join(outputDir, hiddenDir), { recursive: true });
+      }
+      // saveAsPng 是异步写入，必须 await，否则后续读取会拿到不完整的空文件
+      await node.layer.image.saveAsPng(imagePath);
+      layerData.image = hiddenDir ? `${hiddenDir}/${imageName}` : imageName;
+      layerData.thumbnail = hiddenDir ? `hidden/thumb/${imageName}` : `thumb/${imageName}`;
 
       console.log(`  导出图层: ${layer.name} -> ${imageName}`);
     } catch (e) {
@@ -232,7 +241,7 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
   // 处理子图层（组）
   if (node.children && node.children().length > 0) {
     const childrenPromises = node.children()
-      .map((child, i) => layerToJSON(child, outputDir, `${index}_${i}`, usedNames));
+      .map((child, i) => layerToJSON(child, outputDir, `${index}_${i}`, usedNames, options, effectiveVisible));
     const childrenResults = await Promise.all(childrenPromises);
     layerData.children = childrenResults.filter(data => data !== null);
 
@@ -242,6 +251,22 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
       if (layout) {
         layerData.layout = layout;
       }
+
+      // 组图层没有自身像素，用全部子图层包围盒的并集作为组边界
+      const boxes = layerData.children
+        .map(child => child.bounds)
+        .filter(b => b && (b.right - b.left) > 0 && (b.bottom - b.top) > 0);
+      if (boxes.length > 0) {
+        const union = boxes.reduce((acc, b) => ({
+          left: Math.min(acc.left, b.left),
+          top: Math.min(acc.top, b.top),
+          right: Math.max(acc.right, b.right),
+          bottom: Math.max(acc.bottom, b.bottom)
+        }));
+        layerData.position = { left: union.left, top: union.top };
+        layerData.size = { width: union.right - union.left, height: union.bottom - union.top };
+        layerData.bounds = union;
+      }
     }
   }
 
@@ -249,10 +274,52 @@ async function layerToJSON(node, outputDir, index, usedNames = new Map()) {
 }
 
 /**
+ * 递归统计叶子图层数量（不含组）
+ */
+function countLayers(layers) {
+  return layers.reduce((count, layer) => {
+    if (layer.children && layer.children.length > 0) {
+      return count + countLayers(layer.children);
+    }
+    return count + 1;
+  }, 0);
+}
+
+/**
+ * 生成扁平部件清单：每个叶子图层一条记录，带组路径
+ * 便于脚本和下游工具（如 Live2D 部件整理）直接消费
+ */
+function flattenParts(layers, groupPath = []) {
+  const parts = [];
+  for (const layer of layers) {
+    const path = layer.type === 'group' ? [...groupPath, layer.name] : groupPath;
+    if (layer.children && layer.children.length > 0) {
+      parts.push(...flattenParts(layer.children, path));
+    } else {
+      parts.push({
+        name: layer.name,
+        type: layer.type,
+        visible: layer.visible,
+        opacity: layer.opacity,
+        position: layer.position,
+        size: layer.size,
+        bounds: layer.bounds,
+        image: layer.image || null,
+        thumbnail: layer.thumbnail || null,
+        text: layer.text,
+        groupPath: path
+      });
+    }
+  }
+  return parts;
+}
+
+/**
  * 生成 README 文档
  */
 function generateReadme(jsonData) {
   const { name, size, layers } = jsonData;
+  const totalLayers = countLayers(layers);
 
   let readme = `# ${name} - PSD 布局导出
 
@@ -264,7 +331,7 @@ function generateReadme(jsonData) {
 我有一个设计稿的布局数据，请阅读 layout.json 文件了解所有图层的位置和尺寸信息。
 
 设计稿尺寸：${size.width}x${size.height}px
-图层数量：${layers.length}
+图层数量：${totalLayers}
 
 请查看 thumb/ 目录下的缩略图来理解每个图层的视觉内容（缩略图是压缩版本，适合 AI 快速读取）。
 完整的预览图在 preview.png，可以查看整体效果。
@@ -289,7 +356,7 @@ ${name}/
 
 - **名称**: ${name}
 - **尺寸**: ${size.width} x ${size.height} px
-- **图层数量**: ${layers.length}
+- **图层数量**: ${totalLayers}
 
 ## 图层列表
 
@@ -360,7 +427,7 @@ ${name}/
 /**
  * 转换 PSD 为 JSON
  */
-async function psdToJSON(psdPath, outputDir) {
+async function psdToJSON(psdPath, outputDir, options = {}) {
   console.log(`读取 PSD 文件: ${psdPath}`);
 
   // 创建输出目录
@@ -387,7 +454,7 @@ async function psdToJSON(psdPath, outputDir) {
 
   // 提取图层信息
   const layerPromises = tree.children()
-    .map((node, i) => layerToJSON(node, outputDir, i, usedNames));
+    .map((node, i) => layerToJSON(node, outputDir, i, usedNames, options));
   const layerResults = await Promise.all(layerPromises);
   const layers = layerResults.filter(data => data !== null);
 
@@ -404,11 +471,8 @@ async function psdToJSON(psdPath, outputDir) {
   // 导出整体预览图
   console.log(`\n导出整体预览...`);
   const previewPath = join(outputDir, 'preview.png');
-  psd.image.saveAsPng(previewPath);
+  await psd.image.saveAsPng(previewPath);
   console.log(`预览图已生成: ${previewPath}`);
-
-  // 等待文件系统写入完成（psd 库的 saveAsPng 可能有异步操作）
-  await new Promise(resolve => setTimeout(resolve, 500));
 
   // 批量生成缩略图
   console.log(`\n生成缩略图...`);
@@ -420,14 +484,22 @@ async function psdToJSON(psdPath, outputDir) {
     thumbTasks.push(createThumbnail(previewPath, previewThumbPath, 800));
   }
 
-  // 图层缩略图
-  for (const layer of layers) {
-    if (layer.image) {
-      const imagePath = join(outputDir, layer.image);
-      const thumbPath = join(thumbDir, layer.image);
-      if (existsSync(imagePath)) {
-        thumbTasks.push(createThumbnail(imagePath, thumbPath));
-      }
+  // 图层缩略图（递归收集嵌套组内的所有图层）
+  const imageLayers = [];
+  const collectImageLayers = (nodes) => {
+    for (const node of nodes) {
+      if (node.image) imageLayers.push(node);
+      if (node.children && node.children.length > 0) collectImageLayers(node.children);
+    }
+  };
+  collectImageLayers(layers);
+
+  for (const layer of imageLayers) {
+    const imagePath = join(outputDir, layer.image);
+    const thumbPath = join(outputDir, layer.thumbnail);
+    if (existsSync(imagePath)) {
+      mkdirSync(dirname(thumbPath), { recursive: true });
+      thumbTasks.push(createThumbnail(imagePath, thumbPath));
     }
   }
 
@@ -439,6 +511,11 @@ async function psdToJSON(psdPath, outputDir) {
   writeFileSync(jsonPath, JSON.stringify(jsonData, null, 2), 'utf-8');
   console.log(`JSON 已生成: ${jsonPath}`);
 
+  // 写入扁平部件清单
+  const partsPath = join(outputDir, 'parts.json');
+  writeFileSync(partsPath, JSON.stringify(flattenParts(layers), null, 2), 'utf-8');
+  console.log(`部件清单已生成: ${partsPath}`);
+
   // 生成 README
   const readme = generateReadme(jsonData);
   const readmePath = join(outputDir, 'README.md');
@@ -449,8 +526,8 @@ async function psdToJSON(psdPath, outputDir) {
 }
 
 // 执行转换
-export async function convertPSD(psdFile, outputDir) {
-  return psdToJSON(psdFile, outputDir);
+export async function convertPSD(psdFile, outputDir, options = {}) {
+  return psdToJSON(psdFile, outputDir, options);
 }
 
 // 命令行直接调用
